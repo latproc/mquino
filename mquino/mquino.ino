@@ -1,6 +1,6 @@
 #include <Arduino.h>
 #include <EEPROM.h>
-#define DEBUG 1
+//#define DEBUG 1
 #define USEMQTT 1
 #ifdef USEMQTT
 #include <SPI.h>
@@ -77,10 +77,10 @@ bool opposite(float a, float b);
 ProgramSettings program_settings;
 unsigned long now;
 unsigned long publish_time;
-#ifdef USEMQTT
-char config_topic[30];
 uint16_t port = 1883;
 byte MAC_ADDRESS[] = { 0x00, 0x01, 0x03, 0x41, 0x30, 0xA5 }; // old 3com card
+#ifdef USEMQTT
+char config_topic[30];
 char message_buf[100];
 EthernetClient enet_client;
 PubSubClient client("127.0.0.1", 1883, callback, enet_client);
@@ -629,6 +629,51 @@ void loop()
         if (i<3) Serial.print('.');
       }
       Serial.println();
+    }
+    else if (cmd == 'F')
+    {
+      if (param1 >= 0 && param1 <= 5)
+      {
+        if (param1 == 0) param1 = A0;
+        else if (param1 == 1) param1 = A1;
+        else if (param1 == 2) param1 = A2;
+        else if (param1 == 3) param1 = A3;
+        else if (param1 == 4) param1 = A4;
+        else if (param1 == 5) param1 = A5;
+        else param1 = -1;
+        if (param1 >= 0)
+        {
+          Serial.print(RESPONSE_START);
+          Serial.println( analogRead( param1 ) );
+        }
+      }
+      else
+        error_message = "Analogue reads are only available for ports 0..5";
+    }
+    else if (cmd == 'I')
+    {
+      if (param1 >= 0 && param1 <= 64)
+      {
+        Serial.print(RESPONSE_START);
+        if (digitalRead(param1))
+          Serial.println("H");
+        else
+          Serial.println("L");
+      }
+      else
+        error_message = "invalid port";
+    }
+    else if (cmd == 'O')
+    {
+      if (param1 >= 0 && param1 <= 64 && paramLen == 1)
+        if (paramString[0] == 'H')
+          digitalWrite(param1, HIGH);
+        else if (paramString[0] == 'L')
+          digitalWrite(param1, LOW);
+        else
+          error_message = "bad output state";
+      else
+        error_message = "invalid port";
     }
 done_command:
     // remove the command from the input buffer
