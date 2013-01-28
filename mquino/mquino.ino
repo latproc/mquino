@@ -78,15 +78,12 @@ ProgramSettings program_settings;
 unsigned long now;
 unsigned long publish_time;
 #ifdef USEMQTT
-char MQTT_SERVER[40];
-char HOSTNAME[40];
 char config_topic[30];
 uint16_t port = 1883;
 byte MAC_ADDRESS[] = { 0x00, 0x01, 0x03, 0x41, 0x30, 0xA5 }; // old 3com card
-byte server[] = { 192, 168, 4, 28 };
 char message_buf[100];
 EthernetClient enet_client;
-PubSubClient client(server, 1883, callback, enet_client);
+PubSubClient client("127.0.0.1", 1883, callback, enet_client);
 #endif
 #ifdef USEMQTT
 int pin_settings[64];
@@ -412,17 +409,25 @@ void setup()
 {
   Serial.begin(115200);
   program_settings.load();
+  if (!program_settings.valid())
+  {
+    program_settings.header[0] = 217;
+    program_settings.header[1] = 59;
+    strcpy(program_settings.broker_host,"0.0.0.0");
+    strcpy(program_settings.hostname,"MyMega");
+    for (byte i = 0; i<6; i++)
+      program_settings.mac_address[i], MAC_ADDRESS[i];
+    program_settings.save();
+  }
   now = millis();
   publish_time = now + 5000; // startup delay before we start publishing
 #ifdef USEMQTT
-  strcpy(MQTT_SERVER,"192.168.4.28");
-  strcpy(HOSTNAME,"MyMega");
-  if (Ethernet.begin(MAC_ADDRESS) == 0)
+  if (Ethernet.begin(program_settings.mac_address) == 0)
   {
     Serial.println("Failed to configure Ethernet using DHCP");
     return;
   }
-  client = PubSubClient((char *)MQTT_SERVER, port, callback, enet_client);
+  client = PubSubClient(program_settings.hostname, program_settings.broker_port, callback, enet_client);
 #endif
 #ifdef USEMQTT
   for (int i=0; i<64; ++i) pin_settings[i] = s_unknown;
@@ -435,7 +440,7 @@ void loop()
   {
     // clientID, username, MD5 encoded password
     client.connect("mquino", "mquino_user", "00000000000000000000000000000");
-    snprintf(config_topic, 29, "%s/config/+", HOSTNAME);
+    snprintf(config_topic, 29, "%s/config/+", program_settings.hostname);
     client.subscribe(config_topic);
   }
 #endif
