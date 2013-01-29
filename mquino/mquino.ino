@@ -21,6 +21,10 @@ struct ProgramSettings
   {
     return header[0] == 217 && header[1] == 59;
   }
+  ProgramSettings()
+  {
+    load();
+  }
 };
 #ifdef USEMQTT
 enum ParsingState { ps_unknown, ps_processing_config, ps_setting_output, ps_skipping };
@@ -32,7 +36,8 @@ enum InputStates { idle, reading, command_loaded };
 class Test
 {
 public:
-  void run();
+  Test(const char *test_name, const char *test_desc) : name(test_name), description(test_desc) {}
+  bool run();
   virtual bool execute() = 0;
   inline static std::list<Test *>::iterator begin()
   {
@@ -58,7 +63,17 @@ public:
   {
     return total_successes;
   }
+  const std::string & getName() const
+  {
+    return name;
+  }
+  const std::string & getDesc() const
+  {
+    return description;
+  }
 protected:
+  std::string name;
+  std::string description;
   static int total_tests;
   static int total_failures;
   static int total_successes;
@@ -82,9 +97,10 @@ byte MAC_ADDRESS[] = { 0x00, 0x01, 0x03, 0x41, 0x30, 0xA5 }; // old 3com card
 #ifdef USEMQTT
 char config_topic[30];
 char message_buf[100];
-EthernetClient enet_client;
-PubSubClient client("127.0.0.1", 1883, callback, enet_client);
 #endif
+byte server[] = { 192, 168, 2, 1 };
+EthernetClient enet_client;
+PubSubClient client(server, 1883, callback, enet_client);
 #ifdef USEMQTT
 int pin_settings[64];
 #endif
@@ -119,7 +135,7 @@ class TestSettingsSave : public Test
 {
   int testNum;
 public:
-  TestSettingsSave(int test) : testNum(test) {  }
+  TestSettingsSave(int test) : Test("Test Settings Save", ""), testNum(test) {  }
   bool execute()
   {
     if (testNum == 1) return testOne();
@@ -149,13 +165,19 @@ int Test::total_successes = 0;
 std::list<Test *> Test::all_tests;
 #endif
 #ifdef TESTING
-void Test::run()
+bool Test::run()
 {
   ++total_tests;
   if (this->execute())
+  {
     ++total_successes;
+    return true;
+  }
   else
+  {
     ++total_failures;
+    return false;
+  }
 }
 #endif
 #ifdef USEMQTT
@@ -164,15 +186,17 @@ void callback(char* topic, byte* payload, unsigned int length)
   unsigned int i = 0;
   ParsingState parse_state = ps_unknown;
   int pin = -1;
-  Serial.println("Message arrived:  topic: " + String(topic));
-  Serial.println("Length: " + String(length,DEC));
-  // create character buffer with ending null terminator (string)
+  Serial.print("Message arrived\n  topic: ");
+  Serial.println(topic);
+  Serial.print("Message length: ");
+  Serial.println(length);
   Field field = f_name;
   int j = 0;
-  for (i=0; i<length; i++)
+  unsigned int n = strlen(topic);
+  for (i=0; i<=n; i++)
   {
-    char curr = payload[i];
-    if (curr == '/' || curr == ' ' || i + 1 == length)
+    char curr = (i<n) ? topic[i] : 0;
+    if (curr == '/' || curr == ' ' || i == n )
     {
       message_buf[j] = 0;
       if (field == f_name) field = f_config; // ignore
@@ -181,7 +205,7 @@ void callback(char* topic, byte* payload, unsigned int length)
         if (strcmp(message_buf, "config") == 0)
         {
           parse_state = ps_processing_config;
-          field = f_pin;
+          field = f_dig;
         }
         else if (strcmp(message_buf, "dig") == 0)
         {
@@ -198,7 +222,7 @@ void callback(char* topic, byte* payload, unsigned int length)
       {
         if (strcmp(message_buf, "dig") == 0)
         {
-          parse_state = ps_setting_output;
+          if (parse_state == ps_unknown) parse_state = ps_setting_output;
           field = f_pin; // found f_dig
         }
         else
@@ -217,15 +241,12 @@ void callback(char* topic, byte* payload, unsigned int length)
           break;
         }
         field = f_setting;
-      }
-      else if (field == f_setting)
-      {
         Setting setting = s_unknown;
-        if (strcmp(message_buf, "IN")) setting = s_in;
-        else if (strcmp(message_buf, "OUT")) setting = s_out;
-        else if (strcmp(message_buf, "PWM")) setting = s_pwm;
-        else if (strcmp(message_buf, "on")) setting = s_on;
-        else if (strcmp(message_buf, "off")) setting = s_off;
+        if (strncmp((const char *)payload, "IN", length) == 0) setting = s_in;
+        else if (strncmp((const char *)payload, "OUT", length) == 0) setting = s_out;
+        else if (strncmp((const char *)payload, "PWM", length) == 0) setting = s_pwm;
+        else if (strncmp((const char *)payload, "on", length) == 0) setting = s_on;
+        else if (strncmp((const char *)payload, "off", length) == 0) setting = s_off;
         else
         {
           Serial.println ("unknown setting type");
@@ -235,18 +256,24 @@ void callback(char* topic, byte* payload, unsigned int length)
         {
           if (setting == s_out)
           {
-            pinMode(pin, OUTPUT);
-            snprintf(message_buf, 99, "%s/pin/%d", program_settings.hostname, pin);
-            client.subscribe(message_buf);
-            if (pin < 64) pin_settings[pin] = s_in;
+            if (pin < 64)
+            {
+              pinMode(pin, OUTPUT);
+              pin_settings[pin] = s_out;
+              snprintf(message_buf, 99, "%s/pin/%d", program_settings.hostname, pin);
+              client.subscribe(message_buf);
+            }
           }
           else if (setting == s_in)
           {
-            pinMode(pin, INPUT);
-            snprintf(message_buf, 99, "%s/pin/%d", program_settings.hostname, pin);
-            const char *status = (digitalRead(pin)) ? "on" : "off";
-            client.publish(message_buf, (uint8_t*)status, strlen(status), true );
-            if (pin <64) pin_settings[pin] = s_in;
+            if (pin <64)
+            {
+              pinMode(pin, INPUT);
+              pin_settings[pin] = s_in;
+              snprintf(message_buf, 99, "%s/pin/%d", program_settings.hostname, pin);
+              const char *status = (digitalRead(pin)) ? "on" : "off";
+              client.publish(message_buf, (uint8_t*)status, strlen(status), true );
+            }
           }
           else if (setting == s_pwm)
           {
@@ -272,6 +299,39 @@ void callback(char* topic, byte* payload, unsigned int length)
   if (parse_state == ps_skipping)
     Serial.println(" parse error");
 }
+#endif
+#ifdef TESTING
+class TestCallback : public Test
+{
+  int testNum;
+public:
+  TestCallback(short test) : Test("Test callback function", ""), testNum(test) {  }
+  bool execute()
+  {
+    if (testNum == 1) return testOne();
+    else if (testNum == 2) return testTwo();
+  }
+  bool testOne()
+  {
+    description = "configure a digital input";
+    pin_settings[5] == s_unknown;
+    char *topic = strdup("MyMega/config/dig/5");
+    callback(topic, (byte*)"INxx", 2);
+    free(topic);
+    if (pin_settings[5] == s_in) return true;
+    else return false;
+  }
+  bool testTwo()
+  {
+    description = "configure a digital input";
+    pin_settings[6] == s_unknown;
+    char *topic = strdup("MyMega/config/dig/6");
+    callback(topic, (byte*)"OUTxx", 3);
+    free(topic);
+    if (pin_settings[6] == s_out) return true;
+    else return false;
+  }
+};
 #endif
 int getNumber(char *buf_start, int &offset)
 {
@@ -363,7 +423,7 @@ class TestGetFloat : public Test
 {
   int testNum;
 public:
-  TestGetFloat(short test) : testNum(test) {  }
+  TestGetFloat(short test) : Test("Test getFloat function",""), testNum(test) {  }
   bool execute()
   {
     if (testNum == 1) return testOne();
@@ -427,7 +487,7 @@ void setup()
     Serial.println("Failed to configure Ethernet using DHCP");
     return;
   }
-  client = PubSubClient(program_settings.hostname, program_settings.broker_port, callback, enet_client);
+  //  client = PubSubClient(program_settings.hostname, program_settings.broker_port, callback, enet_client);
 #endif
 #ifdef USEMQTT
   for (int i=0; i<64; ++i) pin_settings[i] = s_unknown;
@@ -444,6 +504,7 @@ void loop()
     client.subscribe(config_topic);
   }
 #endif
+  client.loop();
   now = millis();
   bool response_required = false;
   const char *error_message = 0;
