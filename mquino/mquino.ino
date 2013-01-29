@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <EEPROM.h>
+#include <Dns.h>
 //#define DEBUG 1
 #define USEMQTT 1
 #ifdef USEMQTT
@@ -15,16 +16,16 @@ struct ProgramSettings
   byte mac_address[6];
   char broker_host[40];
   int broker_port;
+  IPAddress broker_ip;
+  IPAddress dns_address;
+  IPAddress broker_address;
   void load();
   void save();
   bool valid()
   {
     return header[0] == 217 && header[1] == 59;
   }
-  ProgramSettings()
-  {
-    load();
-  }
+  ProgramSettings(EthernetClient &);
 };
 #ifdef USEMQTT
 enum ParsingState { ps_unknown, ps_processing_config, ps_setting_output, ps_skipping };
@@ -81,6 +82,7 @@ private:
   static std::list<Test *> all_tests;
 };
 #endif
+bool mq_inet_aton(const char *ipstring, byte *addr);
 #ifdef USEMQTT
 void callback(char* topic, byte* payload, unsigned int length);
 #endif
@@ -89,7 +91,8 @@ int getHexNumber(char *buf_start, int &offset);
 float getFloat(char *buf_start, int &offset);
 int getString(char *buf_start, int &offset);
 bool opposite(float a, float b);
-ProgramSettings program_settings;
+EthernetClient enet_client;
+ProgramSettings program_settings(enet_client);
 unsigned long now;
 unsigned long publish_time;
 uint16_t port = 1883;
@@ -99,7 +102,6 @@ char config_topic[30];
 char message_buf[100];
 #endif
 byte server[] = { 192, 168, 2, 1 };
-EthernetClient enet_client;
 PubSubClient client(server, 1883, callback, enet_client);
 #ifdef USEMQTT
 int pin_settings[64];
@@ -112,6 +114,29 @@ InputStates input_state = idle;
 char command[INPUT_BUFSIZE];
 int input_pos = 0;
 char paramString[40];
+ProgramSettings::ProgramSettings(EthernetClient &enet_client)
+{
+  load();
+  if (!program_settings.valid())
+  {
+    program_settings.header[0] = 217;
+    program_settings.header[1] = 59;
+    strcpy(program_settings.broker_host,"192.168.2.1");
+    strcpy(program_settings.hostname,"MyMega");
+    for (byte i = 0; i<6; i++)
+      program_settings.mac_address[i] = MAC_ADDRESS[i];
+    // setup the broker up address default (ethernet is not available yet)
+    broker_ip[0] = 192;
+    broker_ip[1] = 168;
+    broker_ip[2] = 2;
+    broker_ip[3] = 1;
+    program_settings.save();
+  }
+  Ethernet.begin(mac_address);
+  DNSClient dns;
+  dns.begin(dns_address);
+  dns.getHostByName(broker_host, broker_ip);
+}
 void ProgramSettings::load()
 {
   int addr = 0;
@@ -120,6 +145,10 @@ void ProgramSettings::load()
   {
     *p++ = EEPROM.read(addr++);
   }
+}
+bool mq_inet_aton(const char *ipstring, IPAddress &addr)
+{
+  return false;
 }
 void ProgramSettings::save()
 {
@@ -245,8 +274,8 @@ void callback(char* topic, byte* payload, unsigned int length)
         if (strncmp((const char *)payload, "IN", length) == 0) setting = s_in;
         else if (strncmp((const char *)payload, "OUT", length) == 0) setting = s_out;
         else if (strncmp((const char *)payload, "PWM", length) == 0) setting = s_pwm;
-        else if (strncmp((const char *)payload, "on", length) == 0) setting = s_on;
-        else if (strncmp((const char *)payload, "off", length) == 0) setting = s_off;
+        else if (strncmp((const char *)payload, "ON", length) == 0) setting = s_on;
+        else if (strncmp((const char *)payload, "OFF", length) == 0) setting = s_off;
         else
         {
           Serial.println ("unknown setting type");
@@ -260,7 +289,9 @@ void callback(char* topic, byte* payload, unsigned int length)
             {
               pinMode(pin, OUTPUT);
               pin_settings[pin] = s_out;
-              snprintf(message_buf, 99, "%s/pin/%d", program_settings.hostname, pin);
+              snprintf(message_buf, 99, "%s/dig/%d", program_settings.hostname, pin);
+              Serial.print("subscribing to: ");
+              Serial.println(message_buf);
               client.subscribe(message_buf);
             }
           }
@@ -270,8 +301,10 @@ void callback(char* topic, byte* payload, unsigned int length)
             {
               pinMode(pin, INPUT);
               pin_settings[pin] = s_in;
-              snprintf(message_buf, 99, "%s/pin/%d", program_settings.hostname, pin);
+              snprintf(message_buf, 99, "%s/dig/%d", program_settings.hostname, pin);
               const char *status = (digitalRead(pin)) ? "on" : "off";
+              Serial.print("publishing to: ");
+              Serial.println(message_buf);
               client.publish(message_buf, (uint8_t*)status, strlen(status), true );
             }
           }
@@ -283,9 +316,19 @@ void callback(char* topic, byte* payload, unsigned int length)
         else if (parse_state == ps_setting_output)
         {
           if (setting == s_on)
+          {
             digitalWrite(pin, HIGH);
+            Serial.print("turned pin ");
+            Serial.print(pin);
+            Serial.println(" on");
+          }
           else if (setting == s_off)
+          {
             digitalWrite(pin, LOW);
+            Serial.print("turned pin ");
+            Serial.print(pin);
+            Serial.println(" off");
+          }
         }
         break;
       }
@@ -468,17 +511,6 @@ bool opposite(float a, float b)
 void setup()
 {
   Serial.begin(115200);
-  program_settings.load();
-  if (!program_settings.valid())
-  {
-    program_settings.header[0] = 217;
-    program_settings.header[1] = 59;
-    strcpy(program_settings.broker_host,"0.0.0.0");
-    strcpy(program_settings.hostname,"MyMega");
-    for (byte i = 0; i<6; i++)
-      program_settings.mac_address[i], MAC_ADDRESS[i];
-    program_settings.save();
-  }
   now = millis();
   publish_time = now + 5000; // startup delay before we start publishing
 #ifdef USEMQTT
@@ -500,7 +532,7 @@ void loop()
   {
     // clientID, username, MD5 encoded password
     client.connect("mquino", "mquino_user", "00000000000000000000000000000");
-    snprintf(config_topic, 29, "%s/config/+", program_settings.hostname);
+    snprintf(config_topic, 29, "%s/config/dig/+", program_settings.hostname);
     client.subscribe(config_topic);
   }
 #endif
@@ -638,6 +670,11 @@ void loop()
         strcpy(program_settings.broker_host, paramString);
         Serial.print("broker host set to ");
         Serial.println(paramString);
+        DNSClient dns;
+        dns.begin(program_settings.dns_address);
+        if (!mq_inet_aton(paramString, program_settings.broker_address))
+          if (dns.getHostByName(paramString, program_settings.broker_address) != 1)
+            Serial.println("failed to translate broker host to an address");
       }
     }
     else if (cmd == 'p')
@@ -765,7 +802,7 @@ done_command:
     {
       if (pin_settings[i] == s_in)
       {
-        snprintf(message_buf, 99, "%s/pin/%d", program_settings.hostname, i);
+        snprintf(message_buf, 99, "%s/dig/%d", program_settings.hostname, i);
         const char *status = (digitalRead(i)) ? "on" : "off";
         client.publish(message_buf, (uint8_t*)status, strlen(status), true );
       }
