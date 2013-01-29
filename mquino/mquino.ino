@@ -1,7 +1,9 @@
 #include <Arduino.h>
 #include <EEPROM.h>
 #include <Dns.h>
+//#define DEBUG_CONSOLE
 //#define DEBUG 1
+#define FEEDBACK
 #define USEMQTT 1
 #ifdef USEMQTT
 #include <SPI.h>
@@ -290,8 +292,10 @@ void callback(char* topic, byte* payload, unsigned int length)
               pinMode(pin, OUTPUT);
               pin_settings[pin] = s_out;
               snprintf(message_buf, 99, "%s/dig/%d", program_settings.hostname, pin);
+#ifdef FEEDBACK
               Serial.print("subscribing to: ");
               Serial.println(message_buf);
+#endif
               client.subscribe(message_buf);
             }
           }
@@ -303,8 +307,10 @@ void callback(char* topic, byte* payload, unsigned int length)
               pin_settings[pin] = s_in;
               snprintf(message_buf, 99, "%s/dig/%d", program_settings.hostname, pin);
               const char *status = (digitalRead(pin)) ? "on" : "off";
+#ifdef FEEDBACK
               Serial.print("publishing to: ");
               Serial.println(message_buf);
+#endif
               client.publish(message_buf, (uint8_t*)status, strlen(status), true );
             }
           }
@@ -417,7 +423,7 @@ int getHexNumber(char *buf_start, int &offset)
       res = res + (ch - '0');
     else
       res = res + (ch - 'A') + 10;
-#ifdef DEBUG
+#ifdef DEBUG_CONSOLE
     Serial.print("hex: ");
     Serial.print(res);
     Serial.print(" ");
@@ -544,7 +550,7 @@ void loop()
   if (input_state != command_loaded && chars_ready)
   {
     int ch = Serial.read();
-#ifdef DEBUG
+#ifdef DEBUG_CONSOLE
     Serial.println(ch);
 #endif
     switch (input_state)
@@ -553,7 +559,7 @@ void loop()
       if (ch == START_MARK)
       {
         input_state = reading;
-#ifdef DEBUG
+#ifdef DEBUG_CONSOLE
         Serial.print("reading (");
         Serial.print(chars_ready);
         Serial.println(")");
@@ -563,24 +569,24 @@ void loop()
     case reading:
       if (ch == END_MARK)
       {
-#ifdef DEBUG
+#ifdef DEBUG_CONSOLE
         Serial.println("end mark");
 #endif
         if (input_pos == 0)
         {
           input_state = idle; // no command read
-#ifdef DEBUG
+#ifdef DEBUG_CONSOLE
           Serial.println("idle");
 #endif
         }
         else
         {
           input_state = command_loaded;
-#ifdef DEBUG
+#ifdef DEBUG_CONSOLE
           Serial.println("loaded");
 #endif
         }
-#ifdef DEBUG
+#ifdef DEBUG_CONSOLE
         Serial.print("buf: ");
         Serial.println(command);
 #endif
@@ -602,7 +608,7 @@ void loop()
   }
   else if (input_state == command_loaded)
   {
-#ifdef DEBUG
+#ifdef DEBUG_CONSOLE
     Serial.println("command loaded");
 #endif
     response_required = true;
@@ -774,6 +780,7 @@ void loop()
         error_message = "invalid port";
     }
 done_command:
+    Serial.println(command);
     // remove the command from the input buffer
     char *p = command;
     char *q = command + input_pos;
