@@ -20,7 +20,6 @@ struct ProgramSettings
   int broker_port;
   IPAddress broker_ip;
   IPAddress dns_address;
-  IPAddress broker_address;
   void load();
   void save();
   bool valid()
@@ -98,12 +97,12 @@ ProgramSettings program_settings(enet_client);
 unsigned long now;
 unsigned long publish_time;
 uint16_t port = 1883;
-byte MAC_ADDRESS[] = { 0x00, 0x01, 0x03, 0x41, 0x30, 0xA5 }; // old 3com card
+byte MAC_ADDRESS[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED }; //0x00, 0x01, 0x03, 0x41, 0x30, 0xA5 }; // old 3com card
 #ifdef USEMQTT
 char config_topic[30];
 char message_buf[100];
 #endif
-byte server[] = { 192, 168, 2, 1 };
+byte server[] = { 172, 29, 51, 1 };
 PubSubClient client(server, 1883, callback, enet_client);
 #ifdef USEMQTT
 int pin_settings[64];
@@ -118,6 +117,8 @@ int input_pos = 0;
 char paramString[40];
 ProgramSettings::ProgramSettings(EthernetClient &enet_client)
 {
+  return;
+  delay(50);
   load();
   if (!program_settings.valid())
   {
@@ -134,10 +135,10 @@ ProgramSettings::ProgramSettings(EthernetClient &enet_client)
     broker_ip[3] = 1;
     program_settings.save();
   }
-  Ethernet.begin(mac_address);
-  DNSClient dns;
-  dns.begin(dns_address);
-  dns.getHostByName(broker_host, broker_ip);
+  //Ethernet.begin(mac_address);
+  //DNSClient dns;
+  //dns.begin(dns_address);
+  //dns.getHostByName(broker_host, broker_ip);
 }
 void ProgramSettings::load()
 {
@@ -516,15 +517,39 @@ bool opposite(float a, float b)
 }
 void setup()
 {
+  delay(50); // allow reset time for the ethernet controller
   Serial.begin(115200);
+  //while (!Serial) {
+  //  ; // wait for serial port to connect. Needed for Leonardo only
+  //}
+  program_settings.load();
+  //program_settings.ip[0] = 172;
+  //program_settings.ip[1] = 29;
+  //program_settings.ip[2] = 51;
+  //program_settings.ip[3] = 27;
+  //program_settings.broker_ip[0] = 172;
+  //program_settings.broker_ip[1] = 29;
+  //program_settings.broker_ip[2] = 51;
+  //program_settings.broker_ip[3] = 1;
+  //for (byte i = 0; i<6; i++)
+  //    program_settings.mac_address[i] = MAC_ADDRESS[i];
+
+  //program_settings.save();
+  
   now = millis();
   publish_time = now + 5000; // startup delay before we start publishing
 #ifdef USEMQTT
   if (Ethernet.begin(program_settings.mac_address) == 0)
   {
     Serial.println("Failed to configure Ethernet using DHCP");
-    return;
+    if (program_settings.valid()) {
+      Ethernet.begin(program_settings.mac_address, program_settings.ip);
+    }
   }
+  Serial.print(program_settings.hostname);
+  Serial.print(" is at ");
+  Serial.println(Ethernet.localIP());
+  
   //  client = PubSubClient(program_settings.hostname, program_settings.broker_port, callback, enet_client);
 #endif
 #ifdef USEMQTT
@@ -676,11 +701,13 @@ void loop()
         strcpy(program_settings.broker_host, paramString);
         Serial.print("broker host set to ");
         Serial.println(paramString);
+        
         DNSClient dns;
         dns.begin(program_settings.dns_address);
-        if (!mq_inet_aton(paramString, program_settings.broker_address))
-          if (dns.getHostByName(paramString, program_settings.broker_address) != 1)
+        if (!mq_inet_aton(paramString, program_settings.broker_ip))
+          if (dns.getHostByName(paramString, program_settings.broker_ip) != 1)
             Serial.println("failed to translate broker host to an address");
+        
       }
     }
     else if (cmd == 'p')
@@ -803,7 +830,7 @@ done_command:
     }
   }
 #ifdef USEMQTT
-  if (publish_time >= now)
+  if (publish_time <= now)
   {
     for (byte i = 0; i<64; ++i)
     {
@@ -811,6 +838,9 @@ done_command:
       {
         snprintf(message_buf, 99, "%s/dig/%d", program_settings.hostname, i);
         const char *status = (digitalRead(i)) ? "on" : "off";
+        //Serial.print("publishing pin ");
+        //Serial.print(i);
+        //Serial.println(" status");
         client.publish(message_buf, (uint8_t*)status, strlen(status), true );
       }
     }
