@@ -570,6 +570,7 @@ void loop()
   client.loop();
   now = millis();
   bool response_required = false;
+  bool output_pin_changed = false;
   const char *error_message = 0;
   int chars_ready = Serial.available();
   if (input_state != command_loaded && chars_ready)
@@ -797,10 +798,14 @@ void loop()
     else if (cmd == 'O')
     {
       if (param1 >= 0 && param1 <= 64 && paramLen == 1)
-        if (paramString[0] == 'H')
+        if (paramString[0] == 'H') {
           digitalWrite(param1, HIGH);
-        else if (paramString[0] == 'L')
+		  output_pin_changed = true;
+	    }
+        else if (paramString[0] == 'L') {
           digitalWrite(param1, LOW);
+		  output_pin_changed = true;
+		}
         else
           error_message = "bad output state";
       else
@@ -830,7 +835,7 @@ done_command:
     }
   }
 #ifdef USEMQTT
-  if (publish_time <= now)
+  if (output_pin_changed || publish_time <= now)
   {
     for (byte i = 0; i<64; ++i)
     {
