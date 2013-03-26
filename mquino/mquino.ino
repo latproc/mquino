@@ -18,15 +18,16 @@ struct ProgramSettings
   byte mac_address[6];
   char broker_host[40];
   int broker_port;
-  IPAddress broker_ip;
+  byte broker_ip[4];
   IPAddress dns_address;
+  IPAddress broker_address;
   void load();
   void save();
   bool valid()
   {
     return header[0] == 217 && header[1] == 59;
   }
-  ProgramSettings(EthernetClient &);
+  void init(EthernetClient &);
 };
 #ifdef USEMQTT
 enum ParsingState { ps_unknown, ps_processing_config, ps_setting_output, ps_skipping };
@@ -87,25 +88,26 @@ bool mq_inet_aton(const char *ipstring, byte *addr);
 #ifdef USEMQTT
 void callback(char* topic, byte* payload, unsigned int length);
 #endif
+int readAnalogueValue(int pin);
 int getNumber(char *buf_start, int &offset);
 int getHexNumber(char *buf_start, int &offset);
 float getFloat(char *buf_start, int &offset);
 int getString(char *buf_start, int &offset);
 bool opposite(float a, float b);
 EthernetClient enet_client;
-ProgramSettings program_settings(enet_client);
+ProgramSettings program_settings;
 unsigned long now;
 unsigned long publish_time;
 uint16_t port = 1883;
-byte MAC_ADDRESS[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED }; //0x00, 0x01, 0x03, 0x41, 0x30, 0xA5 }; // old 3com card
+byte MAC_ADDRESS[] = { 0x00, 0x01, 0x03, 0x41, 0x30, 0xA5 }; // old 3com card
 #ifdef USEMQTT
 char config_topic[30];
 char message_buf[100];
 #endif
-byte server[] = { 172, 29, 51, 1 };
-PubSubClient client(server, 1883, callback, enet_client);
+//byte server[] = { 192, 168, 2, 1 };
+PubSubClient client(enet_client);
 #ifdef USEMQTT
-int pin_settings[64];
+int pin_settings[72];
 #endif
 const int INPUT_BUFSIZE = 60;
 const int START_MARK = '>';
@@ -115,13 +117,13 @@ InputStates input_state = idle;
 char command[INPUT_BUFSIZE];
 int input_pos = 0;
 char paramString[40];
-ProgramSettings::ProgramSettings(EthernetClient &enet_client)
+void ProgramSettings::init(EthernetClient &enet_client)
 {
-  return;
-  delay(50);
+  bool need_save = false;
   load();
   if (!program_settings.valid())
   {
+    need_save = true;
     program_settings.header[0] = 217;
     program_settings.header[1] = 59;
     strcpy(program_settings.broker_host,"192.168.2.1");
@@ -133,12 +135,16 @@ ProgramSettings::ProgramSettings(EthernetClient &enet_client)
     broker_ip[1] = 168;
     broker_ip[2] = 2;
     broker_ip[3] = 1;
-    program_settings.save();
   }
-  //Ethernet.begin(mac_address);
-  //DNSClient dns;
-  //dns.begin(dns_address);
-  //dns.getHostByName(broker_host, broker_ip);
+  Ethernet.begin(mac_address);
+  DNSClient dns;
+  dns.begin(dns_address);
+  if (dns.getHostByName(broker_host, broker_address) == 1)
+  {
+    for (int i=0; i<4; ++i) broker_ip[i] = broker_address[i];
+  }
+  if (need_save)
+    program_settings.save();
 }
 void ProgramSettings::load()
 {
@@ -225,6 +231,7 @@ void callback(char* topic, byte* payload, unsigned int length)
   Field field = f_name;
   int j = 0;
   unsigned int n = strlen(topic);
+  bool analogue_pin = false; // changes to true if the topic refers to an analogue pin
   for (i=0; i<=n; i++)
   {
     char curr = (i<n) ? topic[i] : 0;
@@ -257,6 +264,11 @@ void callback(char* topic, byte* payload, unsigned int length)
           if (parse_state == ps_unknown) parse_state = ps_setting_output;
           field = f_pin; // found f_dig
         }
+        else if (strcmp(message_buf, "ana") == 0 && parse_state == ps_processing_config)
+        {
+          analogue_pin = true;
+          field = f_pin; // found analogue config
+        }
         else
         {
           parse_state = ps_skipping;
@@ -275,6 +287,8 @@ void callback(char* topic, byte* payload, unsigned int length)
         field = f_setting;
         Setting setting = s_unknown;
         if (strncmp((const char *)payload, "IN", length) == 0) setting = s_in;
+        else if (strncmp((const char *)payload, "OFF", length) == 0) setting = s_unknown;
+        else if (strncmp((const char *)payload, "AIN", length) == 0) setting = s_value;
         else if (strncmp((const char *)payload, "OUT", length) == 0) setting = s_out;
         else if (strncmp((const char *)payload, "PWM", length) == 0) setting = s_pwm;
         else if (strncmp((const char *)payload, "ON", length) == 0) setting = s_on;
@@ -315,6 +329,38 @@ void callback(char* topic, byte* payload, unsigned int length)
               client.publish(message_buf, (uint8_t*)status, strlen(status), true );
             }
           }
+          else if (setting == s_value)
+          {
+            if (pin < 8)
+            {
+              pin_settings[64 + pin] = s_value;
+              snprintf(message_buf, 99, "%s/ana/%d", program_settings.hostname, pin);
+              char status[10];
+              int value = readAnalogueValue(pin);
+              snprintf(status, 10, "%d", value);
+#ifdef FEEDBACK
+              Serial.print("publishing ");
+              Serial.print(value);
+              Serial.print(" to: ");
+              Serial.println(message_buf);
+#endif
+              client.publish(message_buf, (uint8_t*)status, strlen(status), true );
+            }
+          }
+          else if (setting == s_unknown)
+          {
+            if (analogue_pin)
+            {
+              if (pin < 8) pin_settings[64 + pin] = s_unknown;
+              Serial.print("stopped publishing analogue pin ");
+            }
+            else if (pin < 64)
+            {
+              Serial.print("stopped publishing pin ");
+              pin_settings[pin] = s_unknown;
+            }
+            Serial.println(pin);
+          }
           else if (setting == s_pwm)
           {
             Serial.println ("PWM mode is not currently supported");
@@ -350,6 +396,19 @@ void callback(char* topic, byte* payload, unsigned int length)
     Serial.println(" parse error");
 }
 #endif
+int readAnalogueValue(int pin)
+{
+  int value = 0;
+  if (pin == 0) value = analogRead(A0);
+  else if (pin == 1) value = analogRead(A1);
+  else if (pin == 2) value = analogRead(A2);
+  else if (pin == 3) value = analogRead(A3);
+  else if (pin == 4) value = analogRead(A4);
+  else if (pin == 5) value = analogRead(A5);
+  else if (pin == 6) value = analogRead(A6);
+  else if (pin == 7) value = analogRead(A7);
+  return value;
+}
 #ifdef TESTING
 class TestCallback : public Test
 {
@@ -517,43 +576,23 @@ bool opposite(float a, float b)
 }
 void setup()
 {
-  delay(50); // allow reset time for the ethernet controller
   Serial.begin(115200);
-  //while (!Serial) {
-  //  ; // wait for serial port to connect. Needed for Leonardo only
-  //}
-  program_settings.load();
-  //program_settings.ip[0] = 172;
-  //program_settings.ip[1] = 29;
-  //program_settings.ip[2] = 51;
-  //program_settings.ip[3] = 27;
-  //program_settings.broker_ip[0] = 172;
-  //program_settings.broker_ip[1] = 29;
-  //program_settings.broker_ip[2] = 51;
-  //program_settings.broker_ip[3] = 1;
-  //for (byte i = 0; i<6; i++)
-  //    program_settings.mac_address[i] = MAC_ADDRESS[i];
-
-  //program_settings.save();
-  
   now = millis();
   publish_time = now + 5000; // startup delay before we start publishing
 #ifdef USEMQTT
+  program_settings.init(enet_client);
+  client.setCallback(callback);
+  client.setServerIP(program_settings.broker_ip);
+  client.setPort(program_settings.broker_port);
   if (Ethernet.begin(program_settings.mac_address) == 0)
   {
     Serial.println("Failed to configure Ethernet using DHCP");
-    if (program_settings.valid()) {
-      Ethernet.begin(program_settings.mac_address, program_settings.ip);
-    }
+    return;
   }
-  Serial.print(program_settings.hostname);
-  Serial.print(" is at ");
-  Serial.println(Ethernet.localIP());
-  
   //  client = PubSubClient(program_settings.hostname, program_settings.broker_port, callback, enet_client);
 #endif
 #ifdef USEMQTT
-  for (int i=0; i<64; ++i) pin_settings[i] = s_unknown;
+  for (int i=0; i<72; ++i) pin_settings[i] = s_unknown;
 #endif
 }
 void loop()
@@ -563,14 +602,19 @@ void loop()
   {
     // clientID, username, MD5 encoded password
     client.connect("mquino", "mquino_user", "00000000000000000000000000000");
-    snprintf(config_topic, 29, "%s/config/dig/+", program_settings.hostname);
-    client.subscribe(config_topic);
+    if (!client.connected()) Serial.println("connection failed");
+    else
+    {
+      snprintf(config_topic, 29, "%s/config/dig/+", program_settings.hostname);
+      client.subscribe(config_topic);
+      snprintf(config_topic, 29, "%s/config/ana/+", program_settings.hostname);
+      client.subscribe(config_topic);
+    }
   }
 #endif
-  client.loop();
+  if (client.connected()) client.loop();
   now = millis();
   bool response_required = false;
-  bool output_pin_changed = false;
   const char *error_message = 0;
   int chars_ready = Serial.available();
   if (input_state != command_loaded && chars_ready)
@@ -702,13 +746,11 @@ void loop()
         strcpy(program_settings.broker_host, paramString);
         Serial.print("broker host set to ");
         Serial.println(paramString);
-        
         DNSClient dns;
         dns.begin(program_settings.dns_address);
-        if (!mq_inet_aton(paramString, program_settings.broker_ip))
-          if (dns.getHostByName(paramString, program_settings.broker_ip) != 1)
+        if (!mq_inet_aton(paramString, program_settings.broker_address))
+          if (dns.getHostByName(paramString, program_settings.broker_address) != 1)
             Serial.println("failed to translate broker host to an address");
-        
       }
     }
     else if (cmd == 'p')
@@ -764,7 +806,7 @@ void loop()
     }
     else if (cmd == 'F')
     {
-      if (param1 >= 0 && param1 <= 5)
+      if (param1 >= 0 && param1 <= 7)
       {
         if (param1 == 0) param1 = A0;
         else if (param1 == 1) param1 = A1;
@@ -772,6 +814,8 @@ void loop()
         else if (param1 == 3) param1 = A3;
         else if (param1 == 4) param1 = A4;
         else if (param1 == 5) param1 = A5;
+        else if (param1 == 6) param1 = A6;
+        else if (param1 == 7) param1 = A7;
         else param1 = -1;
         if (param1 >= 0)
         {
@@ -780,7 +824,7 @@ void loop()
         }
       }
       else
-        error_message = "Analogue reads are only available for ports 0..5";
+        error_message = "Analogue reads are only available for ports 0..7";
     }
     else if (cmd == 'I')
     {
@@ -798,14 +842,10 @@ void loop()
     else if (cmd == 'O')
     {
       if (param1 >= 0 && param1 <= 64 && paramLen == 1)
-        if (paramString[0] == 'H') {
+        if (paramString[0] == 'H')
           digitalWrite(param1, HIGH);
-		  output_pin_changed = true;
-	    }
-        else if (paramString[0] == 'L') {
+        else if (paramString[0] == 'L')
           digitalWrite(param1, LOW);
-		  output_pin_changed = true;
-		}
         else
           error_message = "bad output state";
       else
@@ -835,7 +875,7 @@ done_command:
     }
   }
 #ifdef USEMQTT
-  if (output_pin_changed || publish_time <= now)
+  if (publish_time <= now)
   {
     for (byte i = 0; i<64; ++i)
     {
@@ -843,10 +883,24 @@ done_command:
       {
         snprintf(message_buf, 99, "%s/dig/%d", program_settings.hostname, i);
         const char *status = (digitalRead(i)) ? "on" : "off";
-        //Serial.print("publishing pin ");
-        //Serial.print(i);
-        //Serial.println(" status");
         client.publish(message_buf, (uint8_t*)status, strlen(status), true );
+        Serial.print(message_buf);
+        Serial.print("\t");
+        Serial.println(status);
+      }
+    }
+    for (byte i = 0; i<8; ++i)
+    {
+      if (pin_settings[64 + i] == s_value)
+      {
+        snprintf(message_buf, 99, "%s/ana/%d", program_settings.hostname, i);
+        char status[10];
+        int value = readAnalogueValue(i);
+        snprintf(status, 10, "%d", value);
+        client.publish(message_buf, (uint8_t*)status, strlen(status), true );
+        Serial.print(message_buf);
+        Serial.print("\t");
+        Serial.println(status);
       }
     }
     publish_time += 1000;
