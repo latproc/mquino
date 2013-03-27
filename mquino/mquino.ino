@@ -10,6 +10,7 @@
 #include <PubSubClient.h>
 #include <Ethernet.h>
 #endif
+byte STARTMEM;
 struct ProgramSettings
 {
   byte header[2];
@@ -20,7 +21,6 @@ struct ProgramSettings
   int broker_port;
   byte broker_ip[4];
   IPAddress dns_address;
-  IPAddress broker_address;
   void load();
   void save();
   bool valid()
@@ -101,15 +101,15 @@ unsigned long publish_time;
 uint16_t port = 1883;
 byte MAC_ADDRESS[] = { 0x00, 0x01, 0x03, 0x41, 0x30, 0xA5 }; // old 3com card
 #ifdef USEMQTT
-char config_topic[30];
-char message_buf[100];
+#define MESSAGEBUFLEN 40
+char message_buf[MESSAGEBUFLEN];
 #endif
 //byte server[] = { 192, 168, 2, 1 };
 PubSubClient client(enet_client);
 #ifdef USEMQTT
-int pin_settings[72];
+byte pin_settings[72];
 #endif
-const int INPUT_BUFSIZE = 60;
+const int INPUT_BUFSIZE = 40;
 const int START_MARK = '>';
 const int END_MARK = '\n';
 const char *RESPONSE_START = "<";
@@ -148,17 +148,19 @@ void ProgramSettings::init(EthernetClient &enet_client)
     }
     Serial.println();
   }
-  
-  DNSClient dns;
-  dns.begin(dns_address);
-  if (dns.getHostByName(broker_host, broker_address) == 1)
   {
-    for (int i=0; i<4; ++i) broker_ip[i] = broker_address[i];
-  }
-  else {
-    Serial.print("failed to translate broker host ");
-    Serial.print(program_settings.broker_host);
-    Serial.println(" to an address");
+    IPAddress broker_address;
+    DNSClient dns;
+    dns.begin(dns_address);
+    if (dns.getHostByName(broker_host, broker_address) == 1)
+    {
+      for (int i=0; i<4; ++i) broker_ip[i] = broker_address[i];
+    }
+    else {
+      Serial.print("failed to translate broker host ");
+      Serial.print(program_settings.broker_host);
+      Serial.println(" to an address");
+    }
   }
   if (need_save)
     program_settings.save();
@@ -323,7 +325,7 @@ void callback(char* topic, byte* payload, unsigned int length)
             {
               pinMode(pin, OUTPUT);
               pin_settings[pin] = s_out;
-              snprintf(message_buf, 99, "%s/dig/%d", program_settings.hostname, pin);
+              snprintf(message_buf, MESSAGEBUFLEN-1, "%s/dig/%d", program_settings.hostname, pin);
 #ifdef FEEDBACK
               Serial.print("subscribing to: ");
               Serial.println(message_buf);
@@ -337,7 +339,7 @@ void callback(char* topic, byte* payload, unsigned int length)
             {
               pinMode(pin, INPUT);
               pin_settings[pin] = s_in;
-              snprintf(message_buf, 99, "%s/dig/%d", program_settings.hostname, pin);
+              snprintf(message_buf, MESSAGEBUFLEN-1, "%s/dig/%d", program_settings.hostname, pin);
               const char *status = (digitalRead(pin)) ? "on" : "off";
 #ifdef FEEDBACK
               Serial.print("publishing to: ");
@@ -351,7 +353,7 @@ void callback(char* topic, byte* payload, unsigned int length)
             if (pin < 8)
             {
               pin_settings[64 + pin] = s_value;
-              snprintf(message_buf, 99, "%s/ana/%d", program_settings.hostname, pin);
+              snprintf(message_buf, MESSAGEBUFLEN-1, "%s/ana/%d", program_settings.hostname, pin);
               char status[10];
               int value = readAnalogueValue(pin);
               snprintf(status, 10, "%d", value);
@@ -591,9 +593,14 @@ bool opposite(float a, float b)
   if (a>0 && b<0) return true;
   return false;
 }
+
+byte ENDMEM;
+
 void setup()
 {
   Serial.begin(115200);
+  unsigned long xx = (unsigned long)(&ENDMEM - &STARTMEM);
+  Serial.println((int)xx);
   now = millis();
   publish_time = now + 1000; // startup delay before we start publishing
 #ifdef USEMQTT
@@ -630,10 +637,10 @@ void loop()
     if (!client.connected()) Serial.println("connection failed");
     else
     {
-      snprintf(config_topic, 29, "%s/config/dig/+", program_settings.hostname);
-      client.subscribe(config_topic);
-      snprintf(config_topic, 29, "%s/config/ana/+", program_settings.hostname);
-      client.subscribe(config_topic);
+      snprintf(message_buf, 29, "%s/config/dig/+", program_settings.hostname);
+      client.subscribe(message_buf);
+      snprintf(message_buf, 29, "%s/config/ana/+", program_settings.hostname);
+      client.subscribe(message_buf);
     }
   }
 #endif
@@ -771,11 +778,14 @@ void loop()
         strcpy(program_settings.broker_host, paramString);
         Serial.print("broker host set to ");
         Serial.println(paramString);
+        {
+          IPAddress broker_address;
         DNSClient dns;
         dns.begin(program_settings.dns_address);
-        if (!mq_inet_aton(paramString, program_settings.broker_address))
-          if (dns.getHostByName(paramString, program_settings.broker_address) != 1)
+        if (!mq_inet_aton(paramString, broker_address))
+          if (dns.getHostByName(paramString, broker_address) != 1)
             Serial.println("failed to translate broker host to an address");
+        }
       }
     }
     else if (cmd == 'p')
@@ -906,7 +916,7 @@ done_command:
     {
       if (pin_settings[i] == s_in)
       {
-        snprintf(message_buf, 99, "%s/dig/%d", program_settings.hostname, i);
+        snprintf(message_buf, MESSAGEBUFLEN-1, "%s/dig/%d", program_settings.hostname, i);
         const char *status = (digitalRead(i)) ? "on" : "off";
         client.publish(message_buf, (uint8_t*)status, strlen(status), true );
         Serial.print(message_buf);
@@ -918,7 +928,7 @@ done_command:
     {
       if (pin_settings[64 + i] == s_value)
       {
-        snprintf(message_buf, 99, "%s/ana/%d", program_settings.hostname, i);
+        snprintf(message_buf, MESSAGEBUFLEN-1, "%s/ana/%d", program_settings.hostname, i);
         char status[10];
         int value = readAnalogueValue(i);
         snprintf(status, 10, "%d", value);
