@@ -287,7 +287,7 @@ void callback(char* topic, byte* payload, unsigned int length)
         field = f_setting;
         Setting setting = s_unknown;
         if (strncmp((const char *)payload, "IN", length) == 0) setting = s_in;
-        else if (strncmp((const char *)payload, "OFF", length) == 0) setting = s_unknown;
+        else if (strncmp((const char *)payload, "IGNORE", length) == 0) setting = s_unknown;
         else if (strncmp((const char *)payload, "AIN", length) == 0) setting = s_value;
         else if (strncmp((const char *)payload, "OUT", length) == 0) setting = s_out;
         else if (strncmp((const char *)payload, "PWM", length) == 0) setting = s_pwm;
