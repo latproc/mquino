@@ -25,7 +25,7 @@ struct ProgramSettings
   void save();
   bool valid()
   {
-    return header[0] == 217 && header[1] == 59;
+    return header[0] == 219 && header[1] == 56;
   }
   void init(EthernetClient &);
 };
@@ -124,24 +124,41 @@ void ProgramSettings::init(EthernetClient &enet_client)
   if (!program_settings.valid())
   {
     need_save = true;
-    program_settings.header[0] = 217;
-    program_settings.header[1] = 59;
-    strcpy(program_settings.broker_host,"192.168.2.1");
+    program_settings.header[0] = 219;
+    program_settings.header[1] = 56;
+    strcpy(program_settings.broker_host,"www.mo.id.au");
     strcpy(program_settings.hostname,"MyMega");
     for (byte i = 0; i<6; i++)
       program_settings.mac_address[i] = MAC_ADDRESS[i];
     // setup the broker up address default (ethernet is not available yet)
-    broker_ip[0] = 192;
-    broker_ip[1] = 168;
-    broker_ip[2] = 2;
-    broker_ip[3] = 1;
+    broker_ip[0] = 0;
+    broker_ip[1] = 0;
+    broker_ip[2] = 0;
+    broker_ip[3] = 0;
   }
-  Ethernet.begin(mac_address);
+  if (Ethernet.begin(mac_address) == 0) {
+    Serial.print("failed to obtain an IP address via dhcp");
+  }
+  else {
+    Serial.print("my ip: ");
+    for (byte thisByte = 0; thisByte < 4; thisByte++) {
+      // print the value of each byte of the IP address:
+      Serial.print(Ethernet.localIP()[thisByte], DEC);
+      Serial.print("."); 
+    }
+    Serial.println();
+  }
+  
   DNSClient dns;
   dns.begin(dns_address);
   if (dns.getHostByName(broker_host, broker_address) == 1)
   {
     for (int i=0; i<4; ++i) broker_ip[i] = broker_address[i];
+  }
+  else {
+    Serial.print("failed to translate broker host ");
+    Serial.print(program_settings.broker_host);
+    Serial.println(" to an address");
   }
   if (need_save)
     program_settings.save();
@@ -181,7 +198,7 @@ public:
   bool testOne()
   {
     program_settings.header[0] = 217;
-    program_settings.header[1] = 59;
+    program_settings.header[1] = 56;
     strcpy(program_settings.hostname, "TestOneHost");
     program_settings.broker_port = 5594;
     program_settings.save();
@@ -578,7 +595,7 @@ void setup()
 {
   Serial.begin(115200);
   now = millis();
-  publish_time = now + 5000; // startup delay before we start publishing
+  publish_time = now + 1000; // startup delay before we start publishing
 #ifdef USEMQTT
   program_settings.init(enet_client);
   client.setCallback(callback);
@@ -598,9 +615,17 @@ void setup()
 void loop()
 {
 #ifdef USEMQTT
-  if (!client.connected())
+  if (!client.connected() && program_settings.broker_ip[0] != 0)
   {
     // clientID, username, MD5 encoded password
+    Serial.print("connecting to ");
+    Serial.print(program_settings.broker_host);
+    Serial.print(" ");
+    for (byte x = 0; x<4; ++x) {
+      Serial.print(program_settings.broker_ip[x]);
+      if (x<3) Serial.print(".");
+    }
+    Serial.println();
     client.connect("mquino", "mquino_user", "00000000000000000000000000000");
     if (!client.connected()) Serial.println("connection failed");
     else
