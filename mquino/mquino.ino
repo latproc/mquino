@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <EEPROM.h>
+#include <Ethernet.h>
 #include <Dns.h>
 //#define DEBUG_CONSOLE
 //#define DEBUG 1
@@ -7,10 +8,9 @@
 #define USEMQTT 1
 #ifdef USEMQTT
 #include <SPI.h>
+#include <IPAddress.h>
 #include <PubSubClient.h>
-#include <Ethernet.h>
 #endif
-byte STARTMEM;
 struct ProgramSettings
 {
   byte header[2];
@@ -21,11 +21,12 @@ struct ProgramSettings
   int broker_port;
   byte broker_ip[4];
   IPAddress dns_address;
+  IPAddress broker_address;
   void load();
   void save();
   bool valid()
   {
-    return header[0] == 219 && header[1] == 56;
+    return header[0] == 211 && header[1] == 51;
   }
   void init(EthernetClient &);
 };
@@ -35,55 +36,6 @@ enum Field { f_name, f_config, f_dig, f_pin, f_setting};
 enum Setting { s_on, s_off, s_pwm, s_value, s_unknown, s_in, s_out };
 #endif
 enum InputStates { idle, reading, command_loaded };
-#ifdef TESTING
-class Test
-{
-public:
-  Test(const char *test_name, const char *test_desc) : name(test_name), description(test_desc) {}
-  bool run();
-  virtual bool execute() = 0;
-  inline static std::list<Test *>::iterator begin()
-  {
-    return all_tests.begin();
-  }
-  inline static std::list<Test *>::iterator end()
-  {
-    return all_tests.end();
-  }
-  static void add(Test *test)
-  {
-    all_tests.push_back(test);
-  }
-  static int total()
-  {
-    return total_tests;
-  }
-  static int failures()
-  {
-    return total_failures;
-  }
-  static int successes()
-  {
-    return total_successes;
-  }
-  const std::string & getName() const
-  {
-    return name;
-  }
-  const std::string & getDesc() const
-  {
-    return description;
-  }
-protected:
-  std::string name;
-  std::string description;
-  static int total_tests;
-  static int total_failures;
-  static int total_successes;
-private:
-  static std::list<Test *> all_tests;
-};
-#endif
 bool mq_inet_aton(const char *ipstring, byte *addr);
 #ifdef USEMQTT
 void callback(char* topic, byte* payload, unsigned int length);
@@ -94,6 +46,7 @@ int getHexNumber(char *buf_start, int &offset);
 float getFloat(char *buf_start, int &offset);
 int getString(char *buf_start, int &offset);
 bool opposite(float a, float b);
+int freeRam ();
 EthernetClient enet_client;
 ProgramSettings program_settings;
 unsigned long now;
@@ -101,15 +54,14 @@ unsigned long publish_time;
 uint16_t port = 1883;
 byte MAC_ADDRESS[] = { 0x00, 0x01, 0x03, 0x41, 0x30, 0xA5 }; // old 3com card
 #ifdef USEMQTT
-#define MESSAGEBUFLEN 40
-char message_buf[MESSAGEBUFLEN];
+char config_topic[30];
+char message_buf[100];
 #endif
-//byte server[] = { 192, 168, 2, 1 };
 PubSubClient client(enet_client);
 #ifdef USEMQTT
-byte pin_settings[72];
+int pin_settings[72];
 #endif
-const int INPUT_BUFSIZE = 40;
+const int INPUT_BUFSIZE = 60;
 const int START_MARK = '>';
 const int END_MARK = '\n';
 const char *RESPONSE_START = "<";
@@ -124,43 +76,24 @@ void ProgramSettings::init(EthernetClient &enet_client)
   if (!program_settings.valid())
   {
     need_save = true;
-    program_settings.header[0] = 219;
-    program_settings.header[1] = 56;
-    strcpy(program_settings.broker_host,"www.mo.id.au");
-    strcpy(program_settings.hostname,"MyMega");
+    program_settings.header[0] = 211;
+    program_settings.header[1] = 51;
+    strcpy(program_settings.broker_host,"192.168.2.1");
+    strcpy(program_settings.hostname,"Mega1");
     for (byte i = 0; i<6; i++)
       program_settings.mac_address[i] = MAC_ADDRESS[i];
     // setup the broker up address default (ethernet is not available yet)
-    broker_ip[0] = 0;
-    broker_ip[1] = 0;
-    broker_ip[2] = 0;
-    broker_ip[3] = 0;
+    broker_ip[0] = 192;
+    broker_ip[1] = 168;
+    broker_ip[2] = 2;
+    broker_ip[3] = 1;
   }
-  if (Ethernet.begin(mac_address) == 0) {
-    Serial.print("failed to obtain an IP address via dhcp");
-  }
-  else {
-    Serial.print("my ip: ");
-    for (byte thisByte = 0; thisByte < 4; thisByte++) {
-      // print the value of each byte of the IP address:
-      Serial.print(Ethernet.localIP()[thisByte], DEC);
-      Serial.print("."); 
-    }
-    Serial.println();
-  }
+  Ethernet.begin(mac_address);
+  DNSClient dns;
+  dns.begin(dns_address);
+  if (dns.getHostByName(broker_host, broker_address) == 1)
   {
-    IPAddress broker_address;
-    DNSClient dns;
-    dns.begin(dns_address);
-    if (dns.getHostByName(broker_host, broker_address) == 1)
-    {
-      for (int i=0; i<4; ++i) broker_ip[i] = broker_address[i];
-    }
-    else {
-      Serial.print("failed to translate broker host ");
-      Serial.print(program_settings.broker_host);
-      Serial.println(" to an address");
-    }
+    for (int i=0; i<4; ++i) broker_ip[i] = broker_address[i];
   }
   if (need_save)
     program_settings.save();
@@ -187,56 +120,6 @@ void ProgramSettings::save()
     EEPROM.write(addr++, *p++);
   }
 }
-#ifdef TESTING
-class TestSettingsSave : public Test
-{
-  int testNum;
-public:
-  TestSettingsSave(int test) : Test("Test Settings Save", ""), testNum(test) {  }
-  bool execute()
-  {
-    if (testNum == 1) return testOne();
-  }
-  bool testOne()
-  {
-    program_settings.header[0] = 217;
-    program_settings.header[1] = 56;
-    strcpy(program_settings.hostname, "TestOneHost");
-    program_settings.broker_port = 5594;
-    program_settings.save();
-    program_settings.broker_port = 2225;
-    strcpy(program_settings.hostname, "EMPTY");
-    program_settings.load();
-    if (program_settings.broker_port != 5594
-        || strcmp(program_settings.hostname, "TestOneHost") != 0)
-      return false;
-    else
-      return true;
-  }
-};
-#endif
-#ifdef TESTING
-int Test::total_tests = 0;
-int Test::total_failures = 0;
-int Test::total_successes = 0;
-std::list<Test *> Test::all_tests;
-#endif
-#ifdef TESTING
-bool Test::run()
-{
-  ++total_tests;
-  if (this->execute())
-  {
-    ++total_successes;
-    return true;
-  }
-  else
-  {
-    ++total_failures;
-    return false;
-  }
-}
-#endif
 #ifdef USEMQTT
 void callback(char* topic, byte* payload, unsigned int length)
 {
@@ -247,6 +130,7 @@ void callback(char* topic, byte* payload, unsigned int length)
   Serial.println(topic);
   Serial.print("Message length: ");
   Serial.println(length);
+  payload[length] = 0; // TBD dangerous
   Field field = f_name;
   int j = 0;
   unsigned int n = strlen(topic);
@@ -269,6 +153,12 @@ void callback(char* topic, byte* payload, unsigned int length)
         {
           parse_state = ps_setting_output;
           field = f_pin; // already found f_dig
+        }
+        else if (strcmp(message_buf, "pwm") == 0)
+        {
+          parse_state = ps_setting_output;
+          field = f_pin; // already found f_dig
+          analogue_pin = true; // well, not strictly an analoge pin but may as well be
         }
         else
         {
@@ -310,11 +200,15 @@ void callback(char* topic, byte* payload, unsigned int length)
         else if (strncmp((const char *)payload, "AIN", length) == 0) setting = s_value;
         else if (strncmp((const char *)payload, "OUT", length) == 0) setting = s_out;
         else if (strncmp((const char *)payload, "PWM", length) == 0) setting = s_pwm;
-        else if (strncmp((const char *)payload, "ON", length) == 0) setting = s_on;
-        else if (strncmp((const char *)payload, "OFF", length) == 0) setting = s_off;
-        else
+        else if (strncmp((const char *)payload, "ON", length) == 0
+                 || strncmp((const char *)payload, "on", length) == 0) setting = s_on;
+        else if (strncmp((const char *)payload, "OFF", length) == 0
+                 || strncmp((const char *)payload, "off", length) == 0) setting = s_off;
+        else if (pin_settings[pin] != s_pwm)
         {
-          Serial.println ("unknown setting type");
+          Serial.println ("unknown setting type: ");
+          ((char *)payload)[length] = 0;
+          Serial.println((const char *)payload);
           break;
         }
         if (parse_state == ps_processing_config)
@@ -325,7 +219,7 @@ void callback(char* topic, byte* payload, unsigned int length)
             {
               pinMode(pin, OUTPUT);
               pin_settings[pin] = s_out;
-              snprintf(message_buf, MESSAGEBUFLEN-1, "%s/dig/%d", program_settings.hostname, pin);
+              snprintf(message_buf, 99, "%s/dig/%d", program_settings.hostname, pin);
 #ifdef FEEDBACK
               Serial.print("subscribing to: ");
               Serial.println(message_buf);
@@ -339,7 +233,7 @@ void callback(char* topic, byte* payload, unsigned int length)
             {
               pinMode(pin, INPUT);
               pin_settings[pin] = s_in;
-              snprintf(message_buf, MESSAGEBUFLEN-1, "%s/dig/%d", program_settings.hostname, pin);
+              snprintf(message_buf, 99, "%s/dig/%d", program_settings.hostname, pin);
               const char *status = (digitalRead(pin)) ? "on" : "off";
 #ifdef FEEDBACK
               Serial.print("publishing to: ");
@@ -353,7 +247,7 @@ void callback(char* topic, byte* payload, unsigned int length)
             if (pin < 8)
             {
               pin_settings[64 + pin] = s_value;
-              snprintf(message_buf, MESSAGEBUFLEN-1, "%s/ana/%d", program_settings.hostname, pin);
+              snprintf(message_buf, 99, "%s/ana/%d", program_settings.hostname, pin);
               char status[10];
               int value = readAnalogueValue(pin);
               snprintf(status, 10, "%d", value);
@@ -382,7 +276,17 @@ void callback(char* topic, byte* payload, unsigned int length)
           }
           else if (setting == s_pwm)
           {
-            Serial.println ("PWM mode is not currently supported");
+            if (pin < 64)
+            {
+              pinMode(pin, OUTPUT);
+              pin_settings[pin] = s_pwm;
+              snprintf(message_buf, 99, "%s/pwm/%d", program_settings.hostname, pin);
+#ifdef FEEDBACK
+              Serial.print("subscribing to: ");
+              Serial.println(message_buf);
+#endif
+              client.subscribe(message_buf);
+            }
           }
         }
         else if (parse_state == ps_setting_output)
@@ -400,6 +304,19 @@ void callback(char* topic, byte* payload, unsigned int length)
             Serial.print("turned pin ");
             Serial.print(pin);
             Serial.println(" off");
+          }
+          else if (pin < 14 && pin_settings[pin] == s_pwm)
+          {
+            int pos = 0;
+            int val = getNumber((char *)payload, pos);
+            if (pos)
+            {
+              Serial.print("setting pin ");
+              Serial.print(pin);
+              Serial.print(" to ");
+              Serial.println(val);
+              analogWrite(pin, val);
+            }
           }
         }
         break;
@@ -428,39 +345,6 @@ int readAnalogueValue(int pin)
   else if (pin == 7) value = analogRead(A7);
   return value;
 }
-#ifdef TESTING
-class TestCallback : public Test
-{
-  int testNum;
-public:
-  TestCallback(short test) : Test("Test callback function", ""), testNum(test) {  }
-  bool execute()
-  {
-    if (testNum == 1) return testOne();
-    else if (testNum == 2) return testTwo();
-  }
-  bool testOne()
-  {
-    description = "configure a digital input";
-    pin_settings[5] == s_unknown;
-    char *topic = strdup("MyMega/config/dig/5");
-    callback(topic, (byte*)"INxx", 2);
-    free(topic);
-    if (pin_settings[5] == s_in) return true;
-    else return false;
-  }
-  bool testTwo()
-  {
-    description = "configure a digital input";
-    pin_settings[6] == s_unknown;
-    char *topic = strdup("MyMega/config/dig/6");
-    callback(topic, (byte*)"OUTxx", 3);
-    free(topic);
-    if (pin_settings[6] == s_out) return true;
-    else return false;
-  }
-};
-#endif
 int getNumber(char *buf_start, int &offset)
 {
   char *p = buf_start + offset;
@@ -546,31 +430,6 @@ float getFloat(char *buf_start, int &offset)
   }
   return res;
 }
-#ifdef TESTING
-class TestGetFloat : public Test
-{
-  int testNum;
-public:
-  TestGetFloat(short test) : Test("Test getFloat function",""), testNum(test) {  }
-  bool execute()
-  {
-    if (testNum == 1) return testOne();
-  }
-  bool testOne()
-  {
-    strcpy(command, "z 123.546 X");
-    int offset = 1;
-    float val = getFloat(command, offset);
-    if (val == 123.546f)
-      return true;
-    else
-    {
-      std::cout << "Error, expected " << 123.546 << " got " << val << "\n";
-      return false;
-    }
-  }
-};
-#endif
 int getString(char *buf_start, int &offset)
 {
   char *p = buf_start + offset;
@@ -593,16 +452,19 @@ bool opposite(float a, float b)
   if (a>0 && b<0) return true;
   return false;
 }
-
-byte ENDMEM;
-
+int freeRam ()
+{
+  extern int __heap_start, *__brkval;
+  int v;
+  return (int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval);
+}
 void setup()
 {
   Serial.begin(115200);
-  unsigned long xx = (unsigned long)(&ENDMEM - &STARTMEM);
-  Serial.println((int)xx);
+  Serial.print("Memory used: ");
+  Serial.print(freeRam());
   now = millis();
-  publish_time = now + 1000; // startup delay before we start publishing
+  publish_time = now + 5000; // startup delay before we start publishing
 #ifdef USEMQTT
   program_settings.init(enet_client);
   client.setCallback(callback);
@@ -622,25 +484,17 @@ void setup()
 void loop()
 {
 #ifdef USEMQTT
-  if (!client.connected() && program_settings.broker_ip[0] != 0)
+  if (!client.connected())
   {
     // clientID, username, MD5 encoded password
-    Serial.print("connecting to ");
-    Serial.print(program_settings.broker_host);
-    Serial.print(" ");
-    for (byte x = 0; x<4; ++x) {
-      Serial.print(program_settings.broker_ip[x]);
-      if (x<3) Serial.print(".");
-    }
-    Serial.println();
     client.connect("mquino", "mquino_user", "00000000000000000000000000000");
     if (!client.connected()) Serial.println("connection failed");
     else
     {
-      snprintf(message_buf, 29, "%s/config/dig/+", program_settings.hostname);
-      client.subscribe(message_buf);
-      snprintf(message_buf, 29, "%s/config/ana/+", program_settings.hostname);
-      client.subscribe(message_buf);
+      snprintf(config_topic, 29, "%s/config/dig/+", program_settings.hostname);
+      client.subscribe(config_topic);
+      snprintf(config_topic, 29, "%s/config/ana/+", program_settings.hostname);
+      client.subscribe(config_topic);
     }
   }
 #endif
@@ -778,14 +632,11 @@ void loop()
         strcpy(program_settings.broker_host, paramString);
         Serial.print("broker host set to ");
         Serial.println(paramString);
-        {
-          IPAddress broker_address;
         DNSClient dns;
         dns.begin(program_settings.dns_address);
-        if (!mq_inet_aton(paramString, broker_address))
-          if (dns.getHostByName(paramString, broker_address) != 1)
+        if (!mq_inet_aton(paramString, program_settings.broker_address))
+          if (dns.getHostByName(paramString, program_settings.broker_address) != 1)
             Serial.println("failed to translate broker host to an address");
-        }
       }
     }
     else if (cmd == 'p')
@@ -916,7 +767,7 @@ done_command:
     {
       if (pin_settings[i] == s_in)
       {
-        snprintf(message_buf, MESSAGEBUFLEN-1, "%s/dig/%d", program_settings.hostname, i);
+        snprintf(message_buf, 99, "%s/dig/%d", program_settings.hostname, i);
         const char *status = (digitalRead(i)) ? "on" : "off";
         client.publish(message_buf, (uint8_t*)status, strlen(status), true );
         Serial.print(message_buf);
@@ -928,7 +779,7 @@ done_command:
     {
       if (pin_settings[64 + i] == s_value)
       {
-        snprintf(message_buf, MESSAGEBUFLEN-1, "%s/ana/%d", program_settings.hostname, i);
+        snprintf(message_buf, 99, "%s/ana/%d", program_settings.hostname, i);
         char status[10];
         int value = readAnalogueValue(i);
         snprintf(status, 10, "%d", value);
@@ -938,7 +789,7 @@ done_command:
         Serial.println(status);
       }
     }
-    publish_time += 1000;
+    publish_time += 200;
   }
 #endif
 }
